@@ -1,0 +1,15 @@
+# code from https://github.com/phillipdavidstearns/simcom_wwan-setup
+
+[Unit]
+Description=Connect SIM7600X 4G hat
+After=network.target
+Wants=simcom.timer
+
+[Service]
+Type=oneshot
+RemainAfterExit=no
+ExecStartPre=/bin/bash /home/pi/ludivina/utils/simcom_pre.sh -i wwan0
+ExecStart=/bin/bash /home/pi/ludivina/utils/simcom.sh
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,11 @@
+[Unit]
+Description=Timer that periodically reconnects SIM7600X 4G hat
+Requires=simcom.service
+
+[Timer]
+Unit=simcom.service
+OnBootSec=1min
+OnUnitActiveSec=30min
+
+[Install]
+WantedBy=timers.target

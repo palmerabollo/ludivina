@@ -1,0 +1,21 @@
+[Unit]
+Description=Ludivina Telegram Bot
+After=network.target
+# restart the service forever, never give up
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+# /home/pi/.pyenv/versions/3.10.1/bin/python
+# /home/pi/.cache/pypoetry/virtualenvs/ludivina-ySdYcDhV-py3.10
+ExecStart=/home/pi/.cache/pypoetry/virtualenvs/ludivina-ySdYcDhV-py3.10/bin/python /home/pi/ludivina/main.py
+Restart=always
+RestartSec=30
+Environment="POLL_INTERVAL=300"
+# Use the token provided by botfather https://t.me/BotFather
+Environment="TELEGRAM_TOKEN=CHANGEME"
+Environment="ADMIN_TELEGRAM_USER_ID="
+PassEnvironment=POLL_INTERVAL TELEGRAM_TOKEN ADMIN_TELEGRAM_USER_ID
+
+[Install]
+WantedBy=multi-user.target
