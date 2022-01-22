@@ -19,8 +19,8 @@ from time import sleep
 from datetime import datetime, timedelta
 from io import BytesIO
 from pathlib import Path
-from PIL import Image, ImageOps, ImageEnhance
-from telegram import Update, ParseMode
+from PIL import Image, ImageEnhance
+from telegram import Update, ParseMode, File
 from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackContext
 from thermalprinter import ThermalPrinter, CodePage
 from exceptions import NoPaperLeftException, NoPrinterFoundException
@@ -103,6 +103,8 @@ def split_text(text: str, max_line_length: int = 32) -> list[str]:
 def require_printer(func):
     def wrapper(*args, **kwargs):
         if not printer_installed():
+            # Uncomment for debugging if you don't have a printer
+            # return
             raise NoPrinterFoundException()
 
         with ThermalPrinter(**PRINTER_SETTINGS) as printer:
@@ -189,7 +191,7 @@ def image_handler(update: Update, context: CallbackContext) -> None:
     update.message.reply_text("OK")
 
 
-def prepare_image(file, width, height) -> Image:
+def prepare_image(file: File, width: int, height: int) -> Image:
     # see docs https://python-telegram-bot.readthedocs.io/en/stable/telegram.file.html#telegram.File.download
     # image.download() would download the file. We prefer not to use the SD card to extend its life.
     imagearray = file.download_as_bytearray()
