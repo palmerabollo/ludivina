@@ -6,24 +6,27 @@ Telegram Bot that prints the contents it receives in a thermal printer.
 # pylint: disable=C0116,W0613,C0301,W0511
 # This program is dedicated to the public domain under the CC0 license.
 
-import logging
-import os
-import sys
-import subprocess
 import html
 import json
 import logging
+import os
+import subprocess
+import sys
 import traceback
 
-from time import sleep
 from datetime import datetime, timedelta
-from io import BytesIO
 from pathlib import Path
-from PIL import Image, ImageEnhance
-from telegram import Update, ParseMode, File
-from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackContext
-from thermalprinter import ThermalPrinter, CodePage
+from time import sleep
+from PIL import Image
+from telegram import ParseMode, Update
+from telegram.ext import (CallbackContext, CommandHandler, Filters,
+                          MessageHandler, Updater)
+from thermalprinter import CodePage, ThermalPrinter
 from exceptions import NoPaperLeftException, NoPrinterFoundException
+
+from image import beautify
+from utils import split_text
+from config import read_config, write_config
 
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -33,6 +36,8 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 ADMIN_TELEGRAM_USER_ID = int(os.getenv('ADMIN_TELEGRAM_USER_ID', default=-1))
+ALLOWED_TELEGRAM_USER_IDS = read_config(default_config = set([ADMIN_TELEGRAM_USER_ID]))
+
 MAX_WIDTH = 384
 
 PRINTER_DEVICE = os.getenv("PRINTER_DEVICE", default="/dev/serial0")
@@ -45,33 +50,32 @@ PRINTER_SETTINGS = {
 }
 
 
-def command_start(update: Update, context: CallbackContext) -> None:
-    user = update.effective_user.first_name
-    update.message.reply_text(f'Hola {user}. Mándame fotos y se las imprimo a la abuela')
+def auth(admin: bool = False):
+    def decorator(func):
+        def wrapper(update: Update, context: CallbackContext, **kwargs):
+            if admin:
+                is_admin = update.effective_user.id == ADMIN_TELEGRAM_USER_ID
+                if not is_admin:
+                    update.message.reply_text(f'{update.effective_user.first_name}, no tienes permisos de administración.')
+                    return
 
+            is_allowed = update.effective_user.id in ALLOWED_TELEGRAM_USER_IDS
+            if not is_allowed:
+                update.message.reply_text(f'{update.effective_user.first_name}, todavía no tienes permiso.')
 
-def command_exec(update: Update, context: CallbackContext) -> None:
-    """
-    Executes a command and replies with the stdout/stderr.
-    This is useful to control the device without physical access to it.
-    """
-    # Limit this command to admins because it can be a security risk.
-    is_admin = update.effective_user.id == ADMIN_TELEGRAM_USER_ID
-    if not is_admin:
-        update.message.reply_text(f'{update.effective_user.first_name}, no tienes permisos.')
-        return
+                message = f"El usuario {update.effective_user.first_name} {update.effective_user.last_name} " \
+                        f"con id {update.effective_user.id} ({update.effective_user.username}) no tiene autorización."
+                context.bot.send_message(chat_id=ADMIN_TELEGRAM_USER_ID, text=message)
 
-    update.message.reply_text('OK')
-    commands = filter(None, update.message.text.split()[1:])
-    try:
-        result = subprocess.run(commands, capture_output=True, timeout=30, text=True)
-        update.message.reply_text(f'return code {result.returncode}')
-        if result.stdout:
-            update.message.reply_text('stdout\n' + result.stdout)
-        if result.stderr:
-            update.message.reply_text('stderr\n' + result.stderr)
-    except Exception as e:
-        update.message.reply_text(f'Error: {e}')
+                return
+
+            update.message.reply_text('Recibido')
+            result = func(update, context, **kwargs)
+            update.message.reply_text('OK')
+            return result
+
+        return wrapper
+    return decorator
 
 
 def printer_installed() -> bool:
@@ -79,24 +83,6 @@ def printer_installed() -> bool:
     if not device_found:
         logger.info('Printer not found')
     return device_found
-
-
-def split_text(text: str, max_line_length: int = 32) -> list[str]:
-    # Split in words removing multiple consecutive whitespaces
-    words = filter(None, text.split())
-    lines = ['']
-
-    for word in words:
-        # Truncate words longer than max_line_length to max_line_length
-        word = word[0:max_line_length]
-        last_line = lines[-1]
-
-        if len(last_line) + 1 + len(word) <= max_line_length:
-            lines[-1] = (last_line + ' ' + word) if last_line else word
-        else:
-            lines.append(word)
-
-    return list(filter(None, lines))
 
 
 # see printer docs at https://pypi.org/project/thermalprinter/
@@ -128,7 +114,7 @@ def require_printer(func):
 
 
 def ignore_old_updates(func):
-    def wrapper(update, context, **kwargs):
+    def wrapper(update: Update, context: CallbackContext, **kwargs):
         is_old = update.message.date < datetime.now(update.message.date.tzinfo) - timedelta(hours=24)
         if is_old:
             return None
@@ -136,6 +122,52 @@ def ignore_old_updates(func):
         return func(update, context, **kwargs)
 
     return wrapper
+
+
+def command_start(update: Update, context: CallbackContext) -> None:
+    user = update.effective_user.first_name
+    update.message.reply_text(f'Hola {user}. Mándame fotos y se las imprimo a la abuela')
+
+
+@auth(admin=True)
+def command_exec(update: Update, context: CallbackContext) -> None:
+    """
+    Executes a command and replies with the stdout/stderr.
+    This is useful to control the device without physical access to it.
+    """
+    try:
+        result = subprocess.run(context.args, capture_output=True, timeout=30, text=True)
+        update.message.reply_text(f'return code {result.returncode}')
+        if result.stdout:
+            update.message.reply_text('stdout\n' + result.stdout)
+        if result.stderr:
+            update.message.reply_text('stderr\n' + result.stderr)
+    except Exception as e:
+        update.message.reply_text(f'Error: {e}')
+
+
+@auth(admin=True)
+def command_add(update: Update, context: CallbackContext) -> None:
+    """
+    Authorizes users so it can interact with the bot.
+    """
+    ALLOWED_TELEGRAM_USER_IDS.update(map(int, context.args))
+    write_config(ALLOWED_TELEGRAM_USER_IDS)
+    update.message.reply_text(f'Authorized users {ALLOWED_TELEGRAM_USER_IDS}')
+
+
+@auth(admin=True)
+def command_remove(update: Update, context: CallbackContext) -> None:
+    """
+    Deauthorizes a user so it can't use the bot anymore.
+    """
+    if str(ADMIN_TELEGRAM_USER_ID) in context.args:
+        update.message.reply_text(f'Not able to deauthorize admin user {ADMIN_TELEGRAM_USER_ID}')
+        return
+
+    ALLOWED_TELEGRAM_USER_IDS.difference_update(map(int, context.args))
+    write_config(ALLOWED_TELEGRAM_USER_IDS)
+    update.message.reply_text(f'Authorized users {ALLOWED_TELEGRAM_USER_IDS}')
 
 
 @require_printer
@@ -162,24 +194,26 @@ def print_image(printer: ThermalPrinter, image: Image) -> None:
     printer.image(image)
 
 
+@auth()
 @ignore_old_updates
 def text_handler(update: Update, context: CallbackContext) -> None:
     print_message(update.message.text)
     print_signature(update.effective_user.first_name, update.message.date)
     print_feed()
 
-    update.message.reply_text("OK")
 
-
+@auth()
 @ignore_old_updates
 def image_handler(update: Update, context: CallbackContext) -> None:
     best_quality_file = update.message.photo[-1] # last image is the biggest one
     file_id = best_quality_file.file_id
     file = context.bot.get_file(file_id)
 
-    update.message.reply_text("Imprimiendo")
+    # see docs https://python-telegram-bot.readthedocs.io/en/stable/telegram.file.html#telegram.File.download
+    # image.download() would download the file. We prefer not to use the SD card to extend its life.
+    imagearray = file.download_as_bytearray()
 
-    image = prepare_image(file, best_quality_file.width, best_quality_file.height)
+    image = beautify(imagearray, best_quality_file.width, best_quality_file.height, max_width=MAX_WIDTH)
     print_image(image)
 
     if update.message.caption:
@@ -188,45 +222,13 @@ def image_handler(update: Update, context: CallbackContext) -> None:
     print_signature(update.effective_user.first_name, update.message.date)
     print_feed()
 
-    update.message.reply_text("OK")
-
-
-def prepare_image(file: File, width: int, height: int) -> Image:
-    # see docs https://python-telegram-bot.readthedocs.io/en/stable/telegram.file.html#telegram.File.download
-    # image.download() would download the file. We prefer not to use the SD card to extend its life.
-    imagearray = file.download_as_bytearray()
-
-    image = Image.open(BytesIO(imagearray))
-
-    is_landscape = width > height
-    if is_landscape:
-        # Set expand=True to change the aspect ratio of the image, otherwise it is rotated&cropped
-        image = image.rotate(90, expand=True)
-
-    # Some tests trying to improve the quality of the printed image.
-    # see https://hhsprings.bitbucket.io/docs/programming/examples/python/PIL/ImageOps.html
-    # image = ImageOps.autocontrast(image)
-    # image = ImageOps.grayscale(image)
-    # image = ImageOps.equalize(image)
-    image = ImageEnhance.Sharpness(image).enhance(2.5)
-
-    scale = image.width / float(MAX_WIDTH)
-    image = image.resize((MAX_WIDTH, int(image.height / scale)))
-
-    # Uncomment for debugging
-    # image.show()
-
-    # Dither the image (floyd-steinberg algorithm seems fine https://www.google.com/search?q=floyd-steinberg+dithering+python)
-    # is NOT needed for now because the ThermalPrinter lib does it for us.
-    # see https://thermalprinter.readthedocs.io/en/latest/api.html#thermalprinter.ThermalPrinter.image
-
-    return image
-
 
 # see https://github.com/python-telegram-bot/python-telegram-bot/blob/master/examples/errorhandlerbot.py
 def error_handler(update: object, context: CallbackContext) -> None:
     if isinstance(context.error, NoPaperLeftException):
         update.message.reply_text("No queda papel")
+    else:
+        update.message.reply_text("Algo no ha ido bien")
 
     # Log the error before we do anything else, so we can see it even if something breaks.
     logger.error(msg="Exception while handling an update:", exc_info=context.error)
@@ -249,8 +251,13 @@ def error_handler(update: object, context: CallbackContext) -> None:
 
 
 def main() -> None:
+    if not os.getenv('ADMIN_TELEGRAM_USER_ID'):
+        logger.error("ADMIN_TELEGRAM_USER_ID is not set")
+        sys.exit(1)
+
     token = os.getenv('TELEGRAM_TOKEN')
     if not token:
+        logger.error("TELEGRAM_TOKEN is not set")
         sys.exit(1)
 
     updater = Updater(token)
@@ -258,6 +265,8 @@ def main() -> None:
     dispatcher = updater.dispatcher
     dispatcher.add_handler(CommandHandler("start", command_start))
     dispatcher.add_handler(CommandHandler("exec", command_exec))
+    dispatcher.add_handler(CommandHandler("add", command_add))
+    dispatcher.add_handler(CommandHandler("remove", command_remove))
     dispatcher.add_handler(MessageHandler(Filters.text & ~Filters.command, text_handler))
     dispatcher.add_handler(MessageHandler(Filters.photo, image_handler))
 

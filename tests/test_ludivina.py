@@ -1,5 +1,5 @@
 import unittest
-from main import split_text
+from utils import split_text
 
 
 class TestSplitText(unittest.TestCase):
