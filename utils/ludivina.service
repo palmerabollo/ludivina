@@ -11,7 +11,7 @@ Type=simple
 ExecStart=/home/pi/.cache/pypoetry/virtualenvs/ludivina-ySdYcDhV-py3.10/bin/python /home/pi/ludivina/main.py
 Restart=always
 RestartSec=30
-Environment="POLL_INTERVAL=300"
+Environment="POLL_INTERVAL=180"
 # Use the token provided by botfather https://t.me/BotFather
 Environment="TELEGRAM_TOKEN=CHANGEME"
 Environment="ADMIN_TELEGRAM_USER_ID="
